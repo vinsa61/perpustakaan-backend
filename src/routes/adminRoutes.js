@@ -16,20 +16,18 @@ router.get('/requests', authenticateToken, requireAdmin, async (req, res) => {
         p.tenggat_pengembalian,
         p.status,
         p.created_at,
-        a.id as user_id,
-        a.nama as user_name,
-        a.username,
-        a.email,
-        a.academic_role,
-        a.no_induk,
-        b.id as book_id,
-        b.judul as book_title,
-        b.isbn,
-        b.cover_image,
+        ANY_VALUE(a.id) as user_id,
+        ANY_VALUE(a.nama) as user_name,
+        ANY_VALUE(a.username) as username,
+        ANY_VALUE(a.email) as email,
+        ANY_VALUE(a.academic_role) as academic_role,
+        ANY_VALUE(a.no_induk) as no_induk,
+        ANY_VALUE(b.id) as book_id,
+        ANY_VALUE(b.judul) as book_title,
         GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as book_author,
-        pen.nama as publisher,
+        ANY_VALUE(pen.nama) as publisher,
         CASE 
-          WHEN pg2.id IS NOT NULL THEN 'return'
+          WHEN MAX(pg2.id) IS NOT NULL THEN 'return'
           ELSE 'borrow'
         END as request_type
       FROM Peminjaman p
@@ -45,7 +43,6 @@ router.get('/requests', authenticateToken, requireAdmin, async (req, res) => {
     const conditions = [];
     const params = [];
 
-    // Add filters
     if (status) {
       conditions.push('p.status = ?');
       params.push(status);
@@ -65,7 +62,6 @@ router.get('/requests', authenticateToken, requireAdmin, async (req, res) => {
 
     query += ' GROUP BY p.id ORDER BY p.created_at DESC';
 
-    // Add pagination
     const offset = (page - 1) * limit;
     query += ' LIMIT ? OFFSET ?';
     params.push(parseInt(limit), parseInt(offset));
