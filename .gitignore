@@ -155,7 +155,6 @@ logs/
 *.log
 
 # Database dumps
-*.sql
 *.db
 *.sqlite
 *.sqlite3
