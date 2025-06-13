@@ -18,55 +18,55 @@ router.get("/:id", authenticateToken, async (req, res) => {
       });
     }
 
-    // Main query to get all borrow requests with book details
+    // Replace the main query in the bookshelf route (around line 18-56):
     let query = `
-      SELECT 
-        p.id as peminjaman_id,
-        p.tanggal_pinjam,
-        p.tenggat_pengembalian,
-        p.status as peminjaman_status,
-        pd.id as detail_id,
-        b.id as book_id,
-        b.judul as book_title,
-        b.kategori,
-        b.tahun_terbit,
-        b.stok,
-        b.tersedia,
-        GROUP_CONCAT(DISTINCT CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as book_authors,
-        pen.nama as publisher_name,
-        pen.alamat_jalan as publisher_address,
-        pen.kota as publisher_city,
-        peng.tanggal_dikembalikan,
-        peng.denda,
-        peng.admin_id,
-        a.nama as admin_name,
-        CASE 
-          WHEN peng.id IS NOT NULL THEN 'returned'
-          WHEN p.status = 'dipinjam' THEN 'borrowed'
-          WHEN p.status = 'selesai' THEN 'completed'
-          ELSE p.status
-        END as current_status,
-        CASE 
-          WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL THEN 'overdue'
-          WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'active'
-          WHEN peng.id IS NOT NULL THEN 'returned'
-          ELSE 'completed'
-        END as status_detail,
-        CASE 
-          WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL
-          THEN DATEDIFF(NOW(), p.tenggat_pengembalian)
-          ELSE 0
-        END as days_overdue
-      FROM Peminjaman p
-      JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
-      JOIN Buku b ON pd.buku_id = b.id
-      LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
-      LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
-      LEFT JOIN Penerbit pen ON b.id_penerbit = pen.id
-      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
-      LEFT JOIN Admin a ON peng.admin_id = a.id
-      WHERE p.user_id = ?
-    `;
+  SELECT 
+    p.id as peminjaman_id,
+    p.tanggal_pinjam,
+    p.tenggat_pengembalian,
+    p.status as peminjaman_status,
+    pd.id as detail_id,
+    b.id as book_id,
+    b.judul as book_title,
+    b.kategori,
+    b.tahun_terbit,
+    b.stok,
+    b.tersedia,
+    GROUP_CONCAT(DISTINCT CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as book_authors,
+    pen.nama as publisher_name,
+    pen.alamat_jalan as publisher_address,
+    pen.kota as publisher_city,
+    peng.tanggal_dikembalikan,
+    peng.denda,
+    peng.admin_id,
+    a.nama as admin_name,
+    CASE 
+      WHEN peng.id IS NOT NULL THEN 'returned'
+      WHEN p.status = 'dipinjam' THEN 'borrowed'
+      WHEN p.status = 'selesai' THEN 'completed'
+      ELSE p.status
+    END as current_status,
+    CASE 
+      WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL THEN 'overdue'
+      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'active'
+      WHEN peng.id IS NOT NULL THEN 'returned'
+      ELSE 'completed'
+    END as status_detail,
+    CASE 
+      WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL
+      THEN DATEDIFF(NOW(), p.tenggat_pengembalian)
+      ELSE 0
+    END as days_overdue
+  FROM Peminjaman p
+  JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
+  JOIN Buku b ON pd.buku_id = b.id
+  LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
+  LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
+  LEFT JOIN Penerbit pen ON b.id_penerbit = pen.id
+  LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
+  LEFT JOIN Admin a ON peng.admin_id = a.id
+  WHERE p.user_id = ?
+`;
 
     const params = [id];
 
@@ -79,11 +79,22 @@ router.get("/:id", authenticateToken, async (req, res) => {
       } else if (status === "completed" || status === "selesai") {
         query += ' AND p.status = "selesai"';
       } else if (status === "overdue") {
-        query += ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
+        query +=
+          ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
       }
     }
 
-    query += " GROUP BY p.id, pd.id, b.id ORDER BY p.tanggal_pinjam DESC";
+    // Fix the GROUP BY clause to include all non-aggregated columns
+    query += ` 
+  GROUP BY 
+    p.id, p.tanggal_pinjam, p.tenggat_pengembalian, p.status,
+    pd.id, 
+    b.id, b.judul, b.kategori, b.tahun_terbit, b.stok, b.tersedia,
+    pen.nama, pen.alamat_jalan, pen.kota,
+    peng.id, peng.tanggal_dikembalikan, peng.denda, peng.admin_id,
+    a.nama
+  ORDER BY p.tanggal_pinjam DESC
+`;
 
     // Add pagination
     const offset = (page - 1) * limit;
@@ -113,7 +124,8 @@ router.get("/:id", authenticateToken, async (req, res) => {
       } else if (status === "completed" || status === "selesai") {
         countQuery += ' AND p.status = "selesai"';
       } else if (status === "overdue") {
-        countQuery += ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
+        countQuery +=
+          ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
       }
     }
 
@@ -127,12 +139,12 @@ router.get("/:id", authenticateToken, async (req, res) => {
     );
 
     // Transform data to match the expected structure
-    const transformedBooks = bookshelf.map(book => ({
+    const transformedBooks = bookshelf.map((book) => ({
       peminjaman_id: book.peminjaman_id,
       detail_id: book.detail_id,
       book_id: book.book_id,
       book_title: book.book_title,
-      book_authors: book.book_authors ? book.book_authors.split(', ') : [],
+      book_authors: book.book_authors ? book.book_authors.split(", ") : [],
       kategori: book.kategori,
       tahun_terbit: book.tahun_terbit,
       stok: book.stok,
@@ -140,7 +152,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
       publisher: {
         name: book.publisher_name,
         address: book.publisher_address,
-        city: book.publisher_city
+        city: book.publisher_city,
       },
       borrow_info: {
         tanggal_pinjam: book.tanggal_pinjam,
@@ -148,23 +160,33 @@ router.get("/:id", authenticateToken, async (req, res) => {
         peminjaman_status: book.peminjaman_status,
         current_status: book.current_status,
         status_detail: book.status_detail,
-        days_overdue: book.days_overdue
+        days_overdue: book.days_overdue,
       },
-      return_info: book.tanggal_dikembalikan ? {
-        tanggal_dikembalikan: book.tanggal_dikembalikan,
-        denda: book.denda || 0,
-        admin_id: book.admin_id,
-        admin_name: book.admin_name
-      } : null
+      return_info: book.tanggal_dikembalikan
+        ? {
+            tanggal_dikembalikan: book.tanggal_dikembalikan,
+            denda: book.denda || 0,
+            admin_id: book.admin_id,
+            admin_name: book.admin_name,
+          }
+        : null,
     }));
 
     // Calculate summary statistics
     const summary = {
       total_requests: total,
-      active_borrowed: transformedBooks.filter((book) => book.borrow_info.current_status === "borrowed").length,
-      returned: transformedBooks.filter((book) => book.borrow_info.current_status === "returned").length,
-      completed: transformedBooks.filter((book) => book.borrow_info.current_status === "completed").length,
-      overdue: transformedBooks.filter((book) => book.borrow_info.status_detail === "overdue").length,
+      active_borrowed: transformedBooks.filter(
+        (book) => book.borrow_info.current_status === "borrowed"
+      ).length,
+      returned: transformedBooks.filter(
+        (book) => book.borrow_info.current_status === "returned"
+      ).length,
+      completed: transformedBooks.filter(
+        (book) => book.borrow_info.current_status === "completed"
+      ).length,
+      overdue: transformedBooks.filter(
+        (book) => book.borrow_info.status_detail === "overdue"
+      ).length,
     };
 
     res.json({
@@ -223,22 +245,21 @@ router.get("/:id/summary", authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Bookshelf summary retrieved successfully',
+      message: "Bookshelf summary retrieved successfully",
       data: {
         currently_borrowed: parseInt(summary.currently_borrowed),
         total_returned: parseInt(summary.total_returned),
         total_borrowings: parseInt(summary.total_borrowings),
         total_fines: parseFloat(summary.total_fines),
-        overdue_count: parseInt(summary.overdue_count)
-      }
+        overdue_count: parseInt(summary.overdue_count),
+      },
     });
-
   } catch (error) {
-    console.error('Get bookshelf summary error:', error);
+    console.error("Get bookshelf summary error:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error retrieving bookshelf summary',
-      error: error.message
+      message: "Server error retrieving bookshelf summary",
+      error: error.message,
     });
   }
 });
@@ -277,32 +298,35 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     `;
 
     const offset = (page - 1) * limit;
-    const historyResult = await executeQuery(historyQuery, [id, parseInt(limit), parseInt(offset)]);
+    const historyResult = await executeQuery(historyQuery, [
+      id,
+      parseInt(limit),
+      parseInt(offset),
+    ]);
 
     // Get total count
     const countResult = await executeQuery(
-      'SELECT COUNT(*) as total FROM Log_Peminjaman WHERE user_id = ?',
+      "SELECT COUNT(*) as total FROM Log_Peminjaman WHERE user_id = ?",
       [id]
     );
 
     res.json({
       success: true,
-      message: 'Borrowing history retrieved successfully',
+      message: "Borrowing history retrieved successfully",
       data: historyResult,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
         total: parseInt(countResult[0].total),
-        totalPages: Math.ceil(countResult[0].total / limit)
-      }
+        totalPages: Math.ceil(countResult[0].total / limit),
+      },
     });
-
   } catch (error) {
-    console.error('Get borrowing history error:', error);
+    console.error("Get borrowing history error:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error retrieving borrowing history',
-      error: error.message
+      message: "Server error retrieving borrowing history",
+      error: error.message,
     });
   }
 });
