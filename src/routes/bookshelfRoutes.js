@@ -4,7 +4,7 @@ const { authenticateToken } = require("../middleware/auth");
 
 const router = express.Router();
 
-// GET /api/bookshelf/:id - Get user's bookshelf (borrowed, returned, waiting for approval)
+// GET /api/bookshelf/:id - Get all borrow requests for a specific user
 router.get("/:id", authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -18,57 +18,72 @@ router.get("/:id", authenticateToken, async (req, res) => {
       });
     }
 
-    // Updated query with only existing database fields
+    // Main query to get all borrow requests with book details
     let query = `
       SELECT 
         p.id as peminjaman_id,
         p.tanggal_pinjam,
         p.tenggat_pengembalian,
-        p.status,
-        p.tanggal_pinjam as request_date,
+        p.status as peminjaman_status,
+        pd.id as detail_id,
         b.id as book_id,
         b.judul as book_title,
         b.kategori,
         b.tahun_terbit,
         b.stok,
         b.tersedia,
-        GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as book_author,
-        pen.nama as publisher,
+        GROUP_CONCAT(DISTINCT CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as book_authors,
+        pen.nama as publisher_name,
         pen.alamat_jalan as publisher_address,
         pen.kota as publisher_city,
-        pen2.tanggal_dikembalikan,
-        pen2.denda,
+        peng.tanggal_dikembalikan,
+        peng.denda,
+        peng.admin_id,
+        a.nama as admin_name,
         CASE 
-          WHEN pen2.id IS NOT NULL THEN 'returned'
+          WHEN peng.id IS NOT NULL THEN 'returned'
           WHEN p.status = 'dipinjam' THEN 'borrowed'
+          WHEN p.status = 'selesai' THEN 'completed'
           ELSE p.status
-        END as book_status
+        END as current_status,
+        CASE 
+          WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL THEN 'overdue'
+          WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'active'
+          WHEN peng.id IS NOT NULL THEN 'returned'
+          ELSE 'completed'
+        END as status_detail,
+        CASE 
+          WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL
+          THEN DATEDIFF(NOW(), p.tenggat_pengembalian)
+          ELSE 0
+        END as days_overdue
       FROM Peminjaman p
       JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
       JOIN Buku b ON pd.buku_id = b.id
       LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
       LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
       LEFT JOIN Penerbit pen ON b.id_penerbit = pen.id
-      LEFT JOIN Pengembalian pen2 ON p.id = pen2.peminjaman_id
+      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
+      LEFT JOIN Admin a ON peng.admin_id = a.id
       WHERE p.user_id = ?
     `;
 
     const params = [id];
 
-    // Add status filter (only use actual database enum values)
+    // Add status filter based on database enum values and return status
     if (status) {
       if (status === "returned") {
-        query += " AND pen2.id IS NOT NULL";
-      } else if (status === "borrowed") {
-        query += ' AND p.status = "dipinjam" AND pen2.id IS NULL';
-      } else if (status === "dipinjam") {
-        query += ' AND p.status = "dipinjam" AND pen2.id IS NULL';
-      } else if (status === "selesai") {
+        query += " AND peng.id IS NOT NULL";
+      } else if (status === "borrowed" || status === "dipinjam") {
+        query += ' AND p.status = "dipinjam" AND peng.id IS NULL';
+      } else if (status === "completed" || status === "selesai") {
         query += ' AND p.status = "selesai"';
+      } else if (status === "overdue") {
+        query += ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
       }
     }
 
-    query += " GROUP BY p.id, b.id ORDER BY p.tanggal_pinjam DESC";
+    query += " GROUP BY p.id, pd.id, b.id ORDER BY p.tanggal_pinjam DESC";
 
     // Add pagination
     const offset = (page - 1) * limit;
@@ -77,74 +92,88 @@ router.get("/:id", authenticateToken, async (req, res) => {
 
     const bookshelf = await executeQuery(query, params);
 
-    // Get total count - only use existing tables and fields
+    // Get total count for pagination
     let countQuery = `
-      SELECT COUNT(DISTINCT CONCAT(p.id, '-', b.id)) as total
+      SELECT COUNT(DISTINCT CONCAT(p.id, '-', pd.id)) as total
       FROM Peminjaman p
       JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
       JOIN Buku b ON pd.buku_id = b.id
-      LEFT JOIN Pengembalian pen2 ON p.id = pen2.peminjaman_id
+      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
       WHERE p.user_id = ?
     `;
 
     let countParams = [id];
 
+    // Apply same status filter to count query
     if (status) {
       if (status === "returned") {
-        countQuery += " AND pen2.id IS NOT NULL";
-      } else if (status === "borrowed") {
-        countQuery += ' AND p.status = "dipinjam" AND pen2.id IS NULL';
-      } else if (status === "dipinjam") {
-        countQuery += ' AND p.status = "dipinjam" AND pen2.id IS NULL';
-      } else if (status === "selesai") {
+        countQuery += " AND peng.id IS NOT NULL";
+      } else if (status === "borrowed" || status === "dipinjam") {
+        countQuery += ' AND p.status = "dipinjam" AND peng.id IS NULL';
+      } else if (status === "completed" || status === "selesai") {
         countQuery += ' AND p.status = "selesai"';
+      } else if (status === "overdue") {
+        countQuery += ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
       }
     }
 
     const totalResult = await executeQuery(countQuery, countParams);
     const total = totalResult[0].total;
 
-    // Get user info from Anggota table (only existing fields)
+    // Get user info from Anggota table
     const userInfo = await executeQuery(
       "SELECT nama, username, email, academic_role, no_induk FROM Anggota WHERE id = ?",
       [id]
     );
 
-    // Transform data to include only existing fields
+    // Transform data to match the expected structure
     const transformedBooks = bookshelf.map(book => ({
       peminjaman_id: book.peminjaman_id,
+      detail_id: book.detail_id,
       book_id: book.book_id,
       book_title: book.book_title,
-      book_author: book.book_author,
+      book_authors: book.book_authors ? book.book_authors.split(', ') : [],
       kategori: book.kategori,
       tahun_terbit: book.tahun_terbit,
       stok: book.stok,
       tersedia: Boolean(book.tersedia),
-      publisher: book.publisher,
-      publisher_address: book.publisher_address,
-      publisher_city: book.publisher_city,
-      tanggal_pinjam: book.tanggal_pinjam,
-      tenggat_pengembalian: book.tenggat_pengembalian,
-      status: book.status,
-      book_status: book.book_status,
-      tanggal_dikembalikan: book.tanggal_dikembalikan,
-      denda: book.denda || 0,
-      request_date: book.request_date
+      publisher: {
+        name: book.publisher_name,
+        address: book.publisher_address,
+        city: book.publisher_city
+      },
+      borrow_info: {
+        tanggal_pinjam: book.tanggal_pinjam,
+        tenggat_pengembalian: book.tenggat_pengembalian,
+        peminjaman_status: book.peminjaman_status,
+        current_status: book.current_status,
+        status_detail: book.status_detail,
+        days_overdue: book.days_overdue
+      },
+      return_info: book.tanggal_dikembalikan ? {
+        tanggal_dikembalikan: book.tanggal_dikembalikan,
+        denda: book.denda || 0,
+        admin_id: book.admin_id,
+        admin_name: book.admin_name
+      } : null
     }));
+
+    // Calculate summary statistics
+    const summary = {
+      total_requests: total,
+      active_borrowed: transformedBooks.filter((book) => book.borrow_info.current_status === "borrowed").length,
+      returned: transformedBooks.filter((book) => book.borrow_info.current_status === "returned").length,
+      completed: transformedBooks.filter((book) => book.borrow_info.current_status === "completed").length,
+      overdue: transformedBooks.filter((book) => book.borrow_info.status_detail === "overdue").length,
+    };
 
     res.json({
       success: true,
-      message: "Bookshelf retrieved successfully",
+      message: "User bookshelf retrieved successfully",
       data: {
         user: userInfo[0] || null,
-        books: transformedBooks,
-        summary: {
-          total_requests: total,
-          borrowed: transformedBooks.filter((book) => book.book_status === "borrowed").length,
-          returned: transformedBooks.filter((book) => book.book_status === "returned").length,
-          dipinjam: transformedBooks.filter((book) => book.status === "dipinjam").length,
-          selesai: transformedBooks.filter((book) => book.status === "selesai").length,
-        },
+        borrow_requests: transformedBooks,
+        summary: summary,
       },
       pagination: {
         page: parseInt(page),
@@ -154,37 +183,38 @@ router.get("/:id", authenticateToken, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get bookshelf error:", error);
+    console.error("Get user bookshelf error:", error);
     res.status(500).json({
       success: false,
-      message: "Server error retrieving bookshelf",
+      message: "Server error retrieving user bookshelf",
       error: error.message,
     });
   }
 });
 
-// GET /api/bookshelf/:id/summary - Get bookshelf summary using only existing fields
+// GET /api/bookshelf/:id/summary - Get borrowing summary statistics
 router.get("/:id/summary", authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Check access permissions
     if (req.user.type !== "admin" && req.user.id !== parseInt(id)) {
       return res.status(403).json({
         success: false,
-        message: "Access denied.",
+        message: "Access denied. You can only view your own bookshelf.",
       });
     }
 
-    // Summary query using only existing database fields
+    // Get comprehensive borrowing statistics
     const summaryQuery = `
       SELECT 
-        COUNT(DISTINCT CASE WHEN p.status = 'dipinjam' AND pen.id IS NULL THEN p.id END) as currently_borrowed,
-        COUNT(DISTINCT CASE WHEN pen.id IS NOT NULL THEN p.id END) as total_returned,
+        COUNT(DISTINCT CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN p.id END) as currently_borrowed,
+        COUNT(DISTINCT CASE WHEN peng.id IS NOT NULL THEN p.id END) as total_returned,
         COUNT(DISTINCT p.id) as total_borrowings,
-        COALESCE(SUM(pen.denda), 0) as total_fines,
-        COUNT(DISTINCT CASE WHEN p.tenggat_pengembalian < NOW() AND p.status = 'dipinjam' AND pen.id IS NULL THEN p.id END) as overdue_count
+        COALESCE(SUM(peng.denda), 0) as total_fines,
+        COUNT(DISTINCT CASE WHEN p.tenggat_pengembalian < NOW() AND p.status = 'dipinjam' AND peng.id IS NULL THEN p.id END) as overdue_count
       FROM Peminjaman p
-      LEFT JOIN Pengembalian pen ON p.id = pen.peminjaman_id
+      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
       WHERE p.user_id = ?
     `;
 
@@ -219,6 +249,7 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { page = 1, limit = 20 } = req.query;
 
+    // Check access permissions
     if (req.user.type !== "admin" && req.user.id !== parseInt(id)) {
       return res.status(403).json({
         success: false,
@@ -226,7 +257,7 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
       });
     }
 
-    // Get history from Log_Peminjaman table (existing table)
+    // Get history from Log_Peminjaman table
     const historyQuery = `
       SELECT 
         lp.id,
