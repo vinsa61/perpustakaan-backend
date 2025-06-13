@@ -141,6 +141,72 @@ router.get("/", async (req, res) => {
   }
 });
 
+// GET /api/books/search - Search books (removed kategori from search)
+router.get("/search", async (req, res) => {
+  try {
+    const { q: query, page = 1, limit = 10 } = req.query;
+
+    if (!query) {
+      return res.status(400).json({
+        status: false,
+        message: "Search query is required",
+      });
+    }
+
+    const searchQuery = `
+SELECT 
+    b.id,
+    b.judul,
+    b.tahun_terbit,
+    b.kategori,
+    b.id_penerbit,
+    b.stok,
+    b.tersedia,
+    p.nama as penerbit_nama,
+    GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as pengarang_names
+  FROM Buku b
+  LEFT JOIN Penerbit p ON b.id_penerbit = p.id
+  LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
+  LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
+  WHERE b.judul LIKE ? 
+     OR CONCAT(pg.nama_depan, ' ', pg.nama_belakang) LIKE ?
+     OR p.nama LIKE ?
+  GROUP BY b.id
+  ORDER BY b.judul
+  LIMIT ? OFFSET ?
+    `;
+
+    const searchTerm = `%${query}%`;
+    const offset = (page - 1) * limit;
+    const books = await executeQuery(searchQuery, [
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      parseInt(limit),
+      parseInt(offset),
+    ]);
+
+    const transformedBooks = books.map((book) => ({
+      ...book,
+      tersedia: Boolean(book.tersedia),
+      pengarang: book.pengarang_names ? book.pengarang_names.split(", ") : [],
+    }));
+
+    res.json({
+      status: true,
+      message: "Search results retrieved successfully",
+      data: transformedBooks,
+    });
+  } catch (error) {
+    console.error("Search books error:", error);
+    res.status(500).json({
+      status: false,
+      message: "Server error searching books",
+      error: error.message,
+    });
+  }
+});
+
 // GET /api/books/:id - Get book details (removed kategori)
 router.get("/:id", async (req, res) => {
   try {
@@ -210,72 +276,6 @@ router.get("/:id", async (req, res) => {
     res.status(500).json({
       status: false,
       message: "Server error retrieving book details",
-      error: error.message,
-    });
-  }
-});
-
-// GET /api/books/search - Search books (removed kategori from search)
-router.get("/search", async (req, res) => {
-  try {
-    const { q: query, page = 1, limit = 10 } = req.query;
-
-    if (!query) {
-      return res.status(400).json({
-        status: false,
-        message: "Search query is required",
-      });
-    }
-
-    const searchQuery = `
-SELECT 
-    b.id,
-    b.judul,
-    b.tahun_terbit,
-    b.kategori,
-    b.id_penerbit,
-    b.stok,
-    b.tersedia,
-    p.nama as penerbit_nama,
-    GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as pengarang_names
-  FROM Buku b
-  LEFT JOIN Penerbit p ON b.id_penerbit = p.id
-  LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
-  LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
-  WHERE b.judul LIKE ? 
-     OR CONCAT(pg.nama_depan, ' ', pg.nama_belakang) LIKE ?
-     OR p.nama LIKE ?
-  GROUP BY b.id
-  ORDER BY b.judul
-  LIMIT ? OFFSET ?
-    `;
-
-    const searchTerm = `%${query}%`;
-    const offset = (page - 1) * limit;
-    const books = await executeQuery(searchQuery, [
-      searchTerm,
-      searchTerm,
-      searchTerm,
-      parseInt(limit),
-      parseInt(offset),
-    ]);
-
-    const transformedBooks = books.map((book) => ({
-      ...book,
-      tersedia: Boolean(book.tersedia),
-      pengarang: book.pengarang_names ? book.pengarang_names.split(", ") : [],
-    }));
-
-    res.json({
-      status: true,
-      message: "Search results retrieved successfully",
-      data: transformedBooks,
-    });
-  } catch (error) {
-    console.error("Search books error:", error);
-    res.status(500).json({
-      status: false,
-      message: "Server error searching books",
       error: error.message,
     });
   }
