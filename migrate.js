@@ -25,8 +25,8 @@ async function runMigrations() {
     if (fs.existsSync(schemaPath)) {
       console.log('📝 Executing main schema...');
       const schemaSQL = fs.readFileSync(schemaPath, 'utf8');
-      await connection.execute(schemaSQL);
-      console.log('✅ Main schema executed');
+      await connection.query(schemaSQL);
+      console.log('✅ Main schema executed'); 
     }
     
     // Read and execute sample data
@@ -34,7 +34,7 @@ async function runMigrations() {
     if (fs.existsSync(sampleDataPath)) {
       console.log('📝 Inserting sample data...');
       const sampleSQL = fs.readFileSync(sampleDataPath, 'utf8');
-      await connection.execute(sampleSQL);
+      await connection.query(sampleSQL);
       console.log('✅ Sample data inserted');
     }
     

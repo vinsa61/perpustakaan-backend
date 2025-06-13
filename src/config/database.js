@@ -29,7 +29,7 @@ const connectToDatabase = async () => {
     console.log('✅ Connected to MySQL server');
     
     // Create database if it doesn't exist
-    await tempConnection.execute(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\``);
+    await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\``);
     console.log(`✅ Database '${dbConfig.database}' is ready`);
     await tempConnection.end();
     
@@ -42,7 +42,7 @@ const connectToDatabase = async () => {
     console.log(`📊 Connected to database: ${dbConfig.database}`);
     
     // Test a simple query
-    const [rows] = await connection.execute('SELECT 1 as test');
+    const [rows] = await connection.query('SELECT 1 as test');
     console.log('✅ Database query test successful');
     
     connection.release();
@@ -67,7 +67,7 @@ const executeQuery = async (query, params = []) => {
   try {
     const connection = await pool.getConnection();
     try {
-      const [rows] = await connection.execute(query, params);
+      const [rows] = await connection.query(query, params);
       return rows;
     } finally {
       connection.release();
@@ -89,7 +89,7 @@ const executeTransaction = async (queries) => {
     
     const results = [];
     for (const { query, params } of queries) {
-      const [rows] = await connection.execute(query, params || []);
+      const [rows] = await connection.query(query, params || []);
       results.push(rows);
     }
     
