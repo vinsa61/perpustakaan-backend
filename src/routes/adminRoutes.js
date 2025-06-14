@@ -48,6 +48,7 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
           WHEN p.status = 'pending' THEN 'waiting for approval'
           WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
           WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
+          WHEN p.status = 'dikembalikan' THEN 'waiting for return approval'
           WHEN p.status = 'selesai' THEN 'completed'
           ELSE 'waiting for approval'
         END as current_status,
@@ -76,6 +77,8 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
         conditions.push("p.status = 'dipinjam' AND peng.id IS NULL");
       } else if (type === "returned") {
         conditions.push("p.status = 'dipinjam' AND peng.id IS NOT NULL");
+      } else if (type === "waiting for return approval") {
+        conditions.push("p.status = 'dikembalikan'");
       } else if (type === "completed") {
         conditions.push("p.status = 'selesai'");
       }
@@ -216,6 +219,174 @@ router.patch(
   }
 );
 
+// POST /api/admin/requests/:id/approve - Approve a pending borrow request
+router.post(
+  "/requests/:id/approve",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id: peminjamanId } = req.params;
+
+      // Check if the request exists and is pending
+      const requestResult = await executeQuery(
+        "SELECT * FROM peminjaman WHERE id = ? AND status = 'pending'",
+        [peminjamanId]
+      );
+
+      if (requestResult.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Pending borrow request not found",
+        });
+      }
+
+      // Get books for this request to update stock
+      const booksResult = await executeQuery(
+        `
+      SELECT pd.buku_id, b.judul, b.stok
+      FROM peminjaman_detail pd
+      JOIN buku b ON pd.buku_id = b.id
+      WHERE pd.peminjaman_id = ?
+    `,
+        [peminjamanId]
+      );
+
+      // Check if all books are still available
+      const unavailableBooks = booksResult.filter((book) => book.stok <= 0);
+      if (unavailableBooks.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot approve: Books no longer available: ${unavailableBooks
+            .map((b) => b.judul)
+            .join(", ")}`,
+        });
+      }
+
+      // Use transaction to approve and update stock
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Update peminjaman status to 'dipinjam'
+        await connection.query(
+          "UPDATE peminjaman SET status = 'dipinjam' WHERE id = ?",
+          [peminjamanId]
+        );
+
+        // Update stock for each book
+        for (const book of booksResult) {
+          await connection.query(
+            `UPDATE buku 
+           SET stok = stok - 1, 
+               tersedia = CASE WHEN stok - 1 = 0 THEN FALSE ELSE TRUE END 
+           WHERE id = ?`,
+            [book.buku_id]
+          );
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      res.json({
+        success: true,
+        status: true,
+        message: "Borrow request approved successfully",
+        data: {
+          peminjaman_id: parseInt(peminjamanId),
+          approved_books: booksResult.map((b) => b.judul).join(", "),
+        },
+      });
+    } catch (error) {
+      console.error("Approve request error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error approving request",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// POST /api/admin/requests/:id/reject - Reject a pending borrow request
+router.post(
+  "/requests/:id/reject",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id: peminjamanId } = req.params;
+      const { reason } = req.body; // Optional rejection reason
+
+      // Check if the request exists and is pending
+      const requestResult = await executeQuery(
+        "SELECT * FROM peminjaman WHERE id = ? AND status = 'pending'",
+        [peminjamanId]
+      );
+
+      if (requestResult.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Pending borrow request not found",
+        });
+      }
+
+      // Update status to rejected (we'll need to add this to enum or use a different approach)
+      // For now, let's delete the request since 'rejected' is not in the current enum
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Delete peminjaman_detail records first (foreign key constraint)
+        await connection.query(
+          "DELETE FROM peminjaman_detail WHERE peminjaman_id = ?",
+          [peminjamanId]
+        );
+
+        // Delete peminjaman record
+        await connection.query("DELETE FROM peminjaman WHERE id = ?", [
+          peminjamanId,
+        ]);
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      res.json({
+        success: true,
+        status: true,
+        message: "Borrow request rejected successfully",
+        data: {
+          peminjaman_id: parseInt(peminjamanId),
+          reason: reason || "No reason provided",
+        },
+      });
+    } catch (error) {
+      console.error("Reject request error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error rejecting request",
+        error: error.message,
+      });
+    }
+  }
+);
+
 // GET /api/admin/statistics - Get borrowing statistics (Admin only)
 router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
   try {
@@ -226,6 +397,7 @@ router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
         SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as waiting_approval,
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 1 ELSE 0 END) as borrowed,
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 1 ELSE 0 END) as returned,
+        SUM(CASE WHEN p.status = 'dikembalikan' THEN 1 ELSE 0 END) as waiting_return_approval,
         SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed
       FROM Peminjaman p
       LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
@@ -247,5 +419,174 @@ router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
     });
   }
 });
+
+// POST /api/admin/returns/:id/approve - Approve a return request
+router.post(
+  "/returns/:id/approve",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id: peminjamanId } = req.params;
+
+      // Check if the return request exists and is in 'dikembalikan' status
+      const requestResult = await executeQuery(
+        `SELECT p.*, pen.denda, pen.tanggal_dikembalikan
+         FROM peminjaman p
+         JOIN pengembalian pen ON p.id = pen.peminjaman_id
+         WHERE p.id = ? AND p.status = 'dikembalikan'`,
+        [peminjamanId]
+      );
+
+      if (requestResult.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Return request not found or not ready for approval",
+        });
+      }
+
+      // Get books for this return to restore stock
+      const booksResult = await executeQuery(
+        `SELECT pd.buku_id, b.judul, b.stok
+         FROM peminjaman_detail pd
+         JOIN buku b ON pd.buku_id = b.id
+         WHERE pd.peminjaman_id = ?`,
+        [peminjamanId]
+      );
+
+      // Use transaction to approve return and restore stock
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Update peminjaman status to 'selesai' (completed)
+        await connection.query(
+          "UPDATE peminjaman SET status = 'selesai' WHERE id = ?",
+          [peminjamanId]
+        );
+
+        // Update pengembalian status to approved
+        await connection.query(
+          "UPDATE pengembalian SET status = 'approved', admin_id = ? WHERE peminjaman_id = ?",
+          [req.user.id, peminjamanId]
+        );
+
+        // Restore stock for each book
+        for (const book of booksResult) {
+          await connection.query(
+            `UPDATE buku 
+             SET stok = stok + 1, 
+                 tersedia = TRUE 
+             WHERE id = ?`,
+            [book.buku_id]
+          );
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      res.json({
+        success: true,
+        status: true,
+        message: "Return request approved successfully",
+        data: {
+          peminjaman_id: parseInt(peminjamanId),
+          returned_books: booksResult.map((b) => b.judul).join(", "),
+          fine: requestResult[0].denda,
+        },
+      });
+    } catch (error) {
+      console.error("Approve return error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error approving return",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// POST /api/admin/returns/:id/reject - Reject a return request
+router.post(
+  "/returns/:id/reject",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id: peminjamanId } = req.params;
+      const { reason } = req.body; // Optional rejection reason
+
+      // Check if the return request exists and is in 'dikembalikan' status
+      const requestResult = await executeQuery(
+        "SELECT * FROM peminjaman WHERE id = ? AND status = 'dikembalikan'",
+        [peminjamanId]
+      );
+
+      if (requestResult.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Return request not found or not ready for rejection",
+        });
+      }
+
+      // Use transaction to reject return
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Revert peminjaman status back to 'dipinjam' (still borrowed)
+        await connection.query(
+          "UPDATE peminjaman SET status = 'dipinjam' WHERE id = ?",
+          [peminjamanId]
+        );
+
+        // Update pengembalian status to rejected with reason
+        await connection.query(
+          `UPDATE pengembalian 
+           SET status = 'rejected', 
+               admin_id = ?,
+               rejection_reason = ?
+           WHERE peminjaman_id = ?`,
+          [req.user.id, reason || "Return rejected by admin", peminjamanId]
+        );
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      res.json({
+        success: true,
+        status: true,
+        message: "Return request rejected successfully",
+        data: {
+          peminjaman_id: parseInt(peminjamanId),
+          reason: reason || "No reason provided",
+        },
+      });
+    } catch (error) {
+      console.error("Reject return error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error rejecting return",
+        error: error.message,
+      });
+    }
+  }
+);
 
 module.exports = router;

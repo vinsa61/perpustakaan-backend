@@ -22,11 +22,11 @@ router.get("/", async (req, res) => {
     p.kota as penerbit_kota,
     GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as pengarang_names,
     GROUP_CONCAT(pg.kewarganegaraan SEPARATOR ', ') as pengarang_countries
-  FROM Buku b
-  LEFT JOIN Penerbit p ON b.id_penerbit = p.id
-  LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
-  LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
-    `;
+  FROM buku b
+  LEFT JOIN penerbit p ON b.id_penerbit = p.id
+  LEFT JOIN buku_pengarang bp ON b.id = bp.id_buku
+  LEFT JOIN pengarang pg ON bp.id_pengarang = pg.id
+`;
 
     const conditions = [];
     const params = [];
@@ -48,7 +48,7 @@ router.get("/", async (req, res) => {
       query += " WHERE " + conditions.join(" AND ");
     }
 
-    query += " GROUP BY b.id, p.id ORDER BY b.id DESC";
+    query += ` GROUP BY b.id, b.judul, b.tahun_terbit, b.kategori, b.id_penerbit, b.stok, b.tersedia, p.id, p.nama, p.alamat_jalan, p.kota ORDER BY b.id DESC`;
 
     // Add pagination
     const offset = (page - 1) * limit;
@@ -92,13 +92,12 @@ router.get("/", async (req, res) => {
     }));
 
     // Get total count for pagination (removed kategori from count query)
-    let countQuery = "SELECT COUNT(DISTINCT b.id) as total FROM Buku b";
+    let countQuery = "SELECT COUNT(DISTINCT b.id) as total FROM buku b";
     const countConditions = [];
     const countParams = [];
-
     if (search) {
       countQuery +=
-        " LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id LEFT JOIN Penerbit p ON b.id_penerbit = p.id";
+        " LEFT JOIN buku_pengarang bp ON b.id = bp.id_buku LEFT JOIN pengarang pg ON bp.id_pengarang = pg.id LEFT JOIN penerbit p ON b.id_penerbit = p.id";
     }
 
     if (tersedia !== undefined) {
@@ -157,17 +156,16 @@ router.get("/search", async (req, res) => {
 SELECT 
     b.id,
     b.judul,
-    b.tahun_terbit,
-    b.kategori,
+    b.tahun_terbit,    b.kategori,
     b.id_penerbit,
     b.stok,
     b.tersedia,
     p.nama as penerbit_nama,
     GROUP_CONCAT(CONCAT(pg.nama_depan, ' ', pg.nama_belakang) SEPARATOR ', ') as pengarang_names
-  FROM Buku b
-  LEFT JOIN Penerbit p ON b.id_penerbit = p.id
-  LEFT JOIN Buku_Pengarang bp ON b.id = bp.id_buku
-  LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
+  FROM buku b
+  LEFT JOIN penerbit p ON b.id_penerbit = p.id
+  LEFT JOIN buku_pengarang bp ON b.id = bp.id_buku
+  LEFT JOIN pengarang pg ON bp.id_pengarang = pg.id
   WHERE b.judul LIKE ? 
      OR CONCAT(pg.nama_depan, ' ', pg.nama_belakang) LIKE ?
      OR p.nama LIKE ?
@@ -218,14 +216,13 @@ router.get("/:id", async (req, res) => {
     b.judul,
     b.tahun_terbit,
     b.kategori,
-    b.id_penerbit,
-    b.stok,
+    b.id_penerbit,    b.stok,
     b.tersedia,
     p.nama as penerbit_nama,
     p.alamat_jalan as penerbit_alamat,
     p.kota as penerbit_kota
-  FROM Buku b
-  LEFT JOIN Penerbit p ON b.id_penerbit = p.id
+  FROM buku b
+  LEFT JOIN penerbit p ON b.id_penerbit = p.id
   WHERE b.id = ?
     `;
 
@@ -236,13 +233,11 @@ router.get("/:id", async (req, res) => {
         status: false,
         message: "Book not found",
       });
-    }
-
-    // Get authors
+    } // Get authors
     const authorsQuery = `
       SELECT pg.id, pg.nama_depan, pg.nama_belakang, pg.kewarganegaraan
-      FROM Pengarang pg
-      JOIN Buku_Pengarang bp ON pg.id = bp.id_pengarang
+      FROM pengarang pg
+      JOIN buku_pengarang bp ON pg.id = bp.id_pengarang
       WHERE bp.id_buku = ?
     `;
 
@@ -363,10 +358,8 @@ router.put("/admin/books/:id", async (req, res) => {
       synopsis,
       isbn,
       pengarang_ids,
-    } = req.body;
-
-    // Check if book exists
-    const checkBook = await executeQuery("SELECT id FROM Buku WHERE id = ?", [
+    } = req.body; // Check if book exists
+    const checkBook = await executeQuery("SELECT id FROM buku WHERE id = ?", [
       id,
     ]);
     if (checkBook.length === 0) {
@@ -396,11 +389,10 @@ router.put("/admin/books/:id", async (req, res) => {
 
     // Update book-author relationships
     if (pengarang_ids && Array.isArray(pengarang_ids)) {
-      await executeQuery("DELETE FROM Buku_Pengarang WHERE id_buku = ?", [id]);
-
+      await executeQuery("DELETE FROM buku_pengarang WHERE id_buku = ?", [id]);
       if (pengarang_ids.length > 0) {
         const authorInsertQuery = `
-          INSERT INTO Buku_Pengarang (id_buku, id_pengarang) VALUES ?
+          INSERT INTO buku_pengarang (id_buku, id_pengarang) VALUES ?
         `;
         const authorValues = pengarang_ids.map((authorId) => [id, authorId]);
         await executeQuery(authorInsertQuery, [authorValues]);
@@ -426,7 +418,7 @@ router.delete("/admin/books/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const checkBook = await executeQuery("SELECT id FROM Buku WHERE id = ?", [
+    const checkBook = await executeQuery("SELECT id FROM buku WHERE id = ?", [
       id,
     ]);
     if (checkBook.length === 0) {
@@ -435,12 +427,11 @@ router.delete("/admin/books/:id", async (req, res) => {
         message: "Book not found",
       });
     }
-
     const activeBorrowings = await executeQuery(
       `
       SELECT COUNT(*) as count 
-      FROM Peminjaman_Detail pd
-      JOIN Peminjaman p ON pd.peminjaman_id = p.id
+      FROM peminjaman_detail pd
+      JOIN peminjaman p ON pd.peminjaman_id = p.id
       WHERE pd.buku_id = ? AND p.status = 'dipinjam'
     `,
       [id]
@@ -452,9 +443,8 @@ router.delete("/admin/books/:id", async (req, res) => {
         message: "Cannot delete book with active borrowings",
       });
     }
-
-    await executeQuery("DELETE FROM Buku_Pengarang WHERE id_buku = ?", [id]);
-    await executeQuery("DELETE FROM Buku WHERE id = ?", [id]);
+    await executeQuery("DELETE FROM buku_pengarang WHERE id_buku = ?", [id]);
+    await executeQuery("DELETE FROM buku WHERE id = ?", [id]);
 
     res.json({
       status: true,
@@ -482,7 +472,7 @@ router.post("/admin/books/:id/cover", async (req, res) => {
       });
     }
 
-    const checkBook = await executeQuery("SELECT id FROM Buku WHERE id = ?", [
+    const checkBook = await executeQuery("SELECT id FROM buku WHERE id = ?", [
       id,
     ]);
     if (checkBook.length === 0) {
@@ -491,8 +481,7 @@ router.post("/admin/books/:id/cover", async (req, res) => {
         message: "Book not found",
       });
     }
-
-    await executeQuery("UPDATE Buku SET cover_image = ? WHERE id = ?", [
+    await executeQuery("UPDATE buku SET cover_image = ? WHERE id = ?", [
       cover_image,
       id,
     ]);

@@ -40,7 +40,7 @@ router.post(
 
       // Check if user already exists
       const existingUser = await executeQuery(
-        "SELECT id FROM Anggota WHERE username = ? OR email = ? OR no_induk = ?",
+        "SELECT id FROM anggota WHERE username = ? OR email = ? OR no_induk = ?",
         [username, email, no_induk]
       );
 
@@ -57,13 +57,13 @@ router.post(
 
       // Insert new member
       const nextIdResult = await executeQuery(
-        "SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM Anggota"
+        "SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM anggota"
       );
       const nextId = nextIdResult[0].next_id;
 
       // Insert new member with explicit ID
       const result = await executeQuery(
-        "INSERT INTO Anggota (id, nama, username, email, password, academic_role, no_induk) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO anggota (id, nama, username, email, password, academic_role, no_induk) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [nextId, nama, username, email, hashedPassword, academic_role, no_induk]
       );
 
@@ -127,7 +127,7 @@ router.post(
 
       // First check if it's a member
       let user = await executeQuery(
-        "SELECT id, nama, username, email, password, academic_role, no_induk FROM Anggota WHERE username = ?",
+        "SELECT id, nama, username, email, password, academic_role, no_induk FROM anggota WHERE username = ?",
         [username]
       );
 
@@ -136,7 +136,7 @@ router.post(
       // If not found in members, check admin
       if (user.length === 0) {
         user = await executeQuery(
-          "SELECT id, nama, username, email, password FROM Admin WHERE username = ?",
+          "SELECT id, nama, username, email, password FROM admin WHERE username = ?",
           [username]
         );
         accountType = "admin";

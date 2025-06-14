@@ -13,6 +13,7 @@ const authRoutes = require("./routes/authRoutes");
 const bookRoutes = require("./routes/bookRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const bookshelfRoutes = require("./routes/bookshelfRoutes");
+const borrowRoutes = require("./routes/borrowRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -53,6 +54,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/books", bookRoutes);
 app.use("/api/admin", adminRoutes); // This will handle /api/admin/requests
 app.use("/api/bookshelf", bookshelfRoutes);
+app.use("/api/borrow", borrowRoutes);
 
 // Health check endpoint
 app.get("/", (req, res) => {
@@ -74,9 +76,15 @@ app.get("/", (req, res) => {
       admin: {
         getRequests: "GET /api/admin/requests (Admin only)",
         updateRequest: "PATCH /api/admin/requests/:id (Admin only)",
+        getStatistics: "GET /api/admin/statistics (Admin only)",
+      },
+      borrow: {
+        createRequest: "POST /api/borrow/request",
+        createReturn: "POST /api/borrow/return/:id",
       },
       bookshelf: {
         getUserBookshelf: "GET /api/bookshelf/:id",
+        getStatistics: "GET /api/bookshelf/:id/statistics",
       },
     },
   });
