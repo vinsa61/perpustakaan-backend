@@ -179,10 +179,14 @@ router.patch(
         await connection.query(
           "UPDATE peminjaman SET status = ? WHERE id = ?",
           [newStatus, id]
-        );
-
-        // If approved, update book availability
+        ); // If approved, stock is automatically updated by database triggers
         if (action === "approve") {
+          // Since database triggers already decreased stock when request was created,
+          // no additional stock validation or updates are needed here
+          // The triggers handle stock management automatically
+        } else if (action === "reject") {
+          // For reject action, we need to restore stock since triggers decreased it
+          // during request creation, but the books were never actually borrowed
           const bookDetails = await connection.query(
             `SELECT pd.buku_id, b.stok, b.judul 
              FROM peminjaman_detail pd 
@@ -191,26 +195,12 @@ router.patch(
             [id]
           );
 
-          // Check if all books are still available
-          const unavailableBooks = bookDetails[0].filter(
-            (book) => book.stok <= 0
-          );
-          if (unavailableBooks.length > 0) {
-            await connection.rollback();
-            return res.status(400).json({
-              success: false,
-              message: `Cannot approve: Books no longer available: ${unavailableBooks
-                .map((b) => b.judul)
-                .join(", ")}`,
-            });
-          }
-
-          // Update stock for each book
+          // Restore stock for each book that was decremented by triggers
           for (const book of bookDetails[0]) {
             await connection.query(
               `UPDATE buku 
-               SET stok = stok - 1, 
-                   tersedia = CASE WHEN stok - 1 = 0 THEN FALSE ELSE TRUE END 
+               SET stok = stok + 1, 
+                   tersedia = TRUE 
                WHERE id = ?`,
               [book.buku_id]
             );
@@ -268,9 +258,7 @@ router.post(
           success: false,
           message: "Pending borrow request not found",
         });
-      }
-
-      // Get books for this request to update stock
+      } // Get books for this request (for logging purposes)
       const booksResult = await executeQuery(
         `
       SELECT pd.buku_id, b.judul, b.stok
@@ -281,18 +269,8 @@ router.post(
         [peminjamanId]
       );
 
-      // Check if all books are still available
-      const unavailableBooks = booksResult.filter((book) => book.stok <= 0);
-      if (unavailableBooks.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Cannot approve: Books no longer available: ${unavailableBooks
-            .map((b) => b.judul)
-            .join(", ")}`,
-        });
-      }
-
-      // Use transaction to approve and update stock
+      // No stock availability check needed since database triggers
+      // already decreased stock when the request was created// Use transaction to approve request
       const { getPool } = require("../config/database");
       const pool = getPool();
       const connection = await pool.getConnection();
@@ -306,16 +284,8 @@ router.post(
           [peminjamanId]
         );
 
-        // Update stock for each book
-        for (const book of booksResult) {
-          await connection.query(
-            `UPDATE buku 
-           SET stok = stok - 1, 
-               tersedia = CASE WHEN stok - 1 = 0 THEN FALSE ELSE TRUE END 
-           WHERE id = ?`,
-            [book.buku_id]
-          );
-        }
+        // Stock is automatically updated by database triggers
+        // No manual stock update needed here
 
         await connection.commit();
       } catch (error) {
@@ -366,11 +336,48 @@ router.post(
           success: false,
           message: "Pending borrow request not found",
         });
-      } // Update status to 'ditolak' (rejected)
-      await executeQuery(
-        "UPDATE peminjaman SET status = 'ditolak' WHERE id = ?",
+      } // Get books for this request to restore stock
+      const booksResult = await executeQuery(
+        `SELECT pd.buku_id, b.judul, b.stok
+         FROM peminjaman_detail pd
+         JOIN buku b ON pd.buku_id = b.id
+         WHERE pd.peminjaman_id = ?`,
         [peminjamanId]
       );
+
+      // Use transaction to reject and restore stock
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Update status to 'ditolak' (rejected)
+        await connection.query(
+          "UPDATE peminjaman SET status = 'ditolak' WHERE id = ?",
+          [peminjamanId]
+        );
+
+        // Restore stock since triggers decreased it during request creation
+        // but the books were never actually borrowed
+        for (const book of booksResult) {
+          await connection.query(
+            `UPDATE buku 
+             SET stok = stok + 1, 
+                 tersedia = TRUE 
+             WHERE id = ?`,
+            [book.buku_id]
+          );
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
 
       res.json({
         success: true,
@@ -465,28 +472,20 @@ router.post(
       const connection = await pool.getConnection();
 
       try {
-        await connection.beginTransaction();
-
-        // Update peminjaman status to 'selesai' (completed)
+        await connection.beginTransaction(); // Update peminjaman status to 'selesai' (completed)
         await connection.query(
           "UPDATE peminjaman SET status = 'selesai' WHERE id = ?",
           [peminjamanId]
-        ); // Update pengembalian admin_id to mark as approved
+        );
+
+        // Stock is automatically restored by database triggers
+        // No manual stock update needed here
+
+        // Update pengembalian admin_id to mark as approved
         await connection.query(
           "UPDATE pengembalian SET admin_id = ? WHERE peminjaman_id = ?",
           [req.user.id, peminjamanId]
         );
-
-        // Restore stock for each book
-        for (const book of booksResult) {
-          await connection.query(
-            `UPDATE buku 
-             SET stok = stok + 1, 
-                 tersedia = TRUE 
-             WHERE id = ?`,
-            [book.buku_id]
-          );
-        }
 
         await connection.commit();
       } catch (error) {
@@ -544,7 +543,6 @@ router.post(
       const { getPool } = require("../config/database");
       const pool = getPool();
       const connection = await pool.getConnection();
-
       try {
         await connection.beginTransaction();
 
@@ -552,12 +550,31 @@ router.post(
         await connection.query(
           "UPDATE peminjaman SET status = 'dipinjam' WHERE id = ?",
           [peminjamanId]
-        ); // Update pengembalian admin_id to mark as rejected
-        // Note: Since we don't have status/rejection_reason columns,
-        // we revert the peminjaman status and keep the pengembalian record
+        );
+
+        // Get books for this return to decrease stock (since books are still borrowed)
+        const booksResult = await connection.query(
+          `SELECT pd.buku_id, b.judul, b.stok
+           FROM peminjaman_detail pd
+           JOIN buku b ON pd.buku_id = b.id
+           WHERE pd.peminjaman_id = ?`,
+          [peminjamanId]
+        ); // Decrease stock for each book since they're still borrowed
+        for (const book of booksResult[0]) {
+          await connection.query(
+            `UPDATE buku 
+             SET stok = stok - 1, 
+                 tersedia = (stok - 1) > 0 
+             WHERE id = ?`,
+            [book.buku_id]
+          );
+        }
+
+        // Mark pengembalian as rejected by setting admin_id to negative value
+        // This way we keep the record but indicate it was rejected
         await connection.query(
           "UPDATE pengembalian SET admin_id = ? WHERE peminjaman_id = ?",
-          [req.user.id, peminjamanId]
+          [-req.user.id, peminjamanId] // Negative admin_id indicates rejection
         );
 
         await connection.commit();

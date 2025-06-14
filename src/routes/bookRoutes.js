@@ -284,9 +284,6 @@ router.post("/admin/books", async (req, res) => {
       id_penerbit,
       tahun_terbit,
       stok,
-      cover_image,
-      synopsis,
-      isbn,
       pengarang_ids,
     } = req.body;
 
@@ -354,9 +351,6 @@ router.put("/admin/books/:id", async (req, res) => {
       id_penerbit,
       tahun_terbit,
       stok,
-      cover_image,
-      synopsis,
-      isbn,
       pengarang_ids,
     } = req.body; // Check if book exists
     const checkBook = await executeQuery("SELECT id FROM buku WHERE id = ?", [

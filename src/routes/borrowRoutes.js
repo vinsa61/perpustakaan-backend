@@ -30,12 +30,9 @@ router.post("/request", authenticateToken, async (req, res) => {
         success: false,
         message: "One or more books not found",
       });
-    }
-
-    // Check if books are available
-    const unavailableBooks = books.filter(
-      (book) => !book.tersedia || book.stok <= 0
-    );
+    } // Check if books are available (more lenient check for trigger compatibility)
+    // Only check actual stock level, not the tersedia flag which may be updated by triggers
+    const unavailableBooks = books.filter((book) => book.stok < 1);
     if (unavailableBooks.length > 0) {
       return res.status(400).json({
         success: false,
@@ -150,30 +147,45 @@ router.post("/request", authenticateToken, async (req, res) => {
 router.post("/return/:id", authenticateToken, async (req, res) => {
   try {
     const { id: peminjamanId } = req.params;
-    const userId = req.user.id; // Check if peminjaman exists and belongs to user
+    const userId = req.user.id;
+
+    console.log(
+      `Return request for peminjaman ${peminjamanId} by user ${userId}`
+    ); // Check if peminjaman exists and belongs to user
+    // Allow both 'dipinjam' status (regular borrow) and books with rejected returns
     const peminjamanResult = await executeQuery(
       "SELECT * FROM peminjaman WHERE id = ? AND user_id = ? AND status = 'dipinjam'",
       [peminjamanId, userId]
     );
+
+    console.log(`Found ${peminjamanResult.length} peminjaman records`);
 
     if (peminjamanResult.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Borrow record not found or not eligible for return",
       });
-    }
-
-    // Check if return already exists
+    } // Check if return already exists and is not rejected
     const existingReturnResult = await executeQuery(
-      "SELECT * FROM pengembalian WHERE peminjaman_id = ?",
+      "SELECT admin_id FROM pengembalian WHERE peminjaman_id = ?",
       [peminjamanId]
     );
 
+    console.log(`Found ${existingReturnResult.length} existing return records`);
     if (existingReturnResult.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Return request already exists for this borrow",
-      });
+      console.log(
+        `Existing return admin_id: ${existingReturnResult[0].admin_id}`
+      );
+    } // Only block if there's an existing return that was approved by an admin
+    if (existingReturnResult.length > 0) {
+      const adminId = existingReturnResult[0].admin_id;
+      if (adminId !== null && adminId > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Return request already approved for this borrow",
+        });
+      }
+      // If admin_id is NULL, 0, or negative (rejected/pending), allow the return to proceed
     }
 
     // Calculate fine if overdue
@@ -191,11 +203,28 @@ router.post("/return/:id", authenticateToken, async (req, res) => {
 
     try {
       await connection.beginTransaction(); // Create return record
-      await connection.query(
-        `INSERT INTO pengembalian (peminjaman_id, tanggal_dikembalikan, denda) 
-         VALUES (?, NOW(), ?)`,
-        [peminjamanId, fine]
+      // Check if pengembalian record already exists (from previous rejected return)
+      const existingReturn = await connection.query(
+        "SELECT id FROM pengembalian WHERE peminjaman_id = ?",
+        [peminjamanId]
       );
+
+      if (existingReturn[0].length > 0) {
+        // Update existing pengembalian record
+        await connection.query(
+          `UPDATE pengembalian 
+           SET tanggal_dikembalikan = NOW(), denda = ?, admin_id = NULL 
+           WHERE peminjaman_id = ?`,
+          [fine, peminjamanId]
+        );
+      } else {
+        // Create new pengembalian record
+        await connection.query(
+          `INSERT INTO pengembalian (peminjaman_id, tanggal_dikembalikan, denda) 
+           VALUES (?, NOW(), ?)`,
+          [peminjamanId, fine]
+        );
+      }
 
       // Update peminjaman status to 'dikembalikan' (waiting for admin approval)
       await connection.query(
@@ -228,44 +257,12 @@ router.post("/return/:id", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Create return request error:", error);
+    console.error("Stack trace:", error.stack);
     res.status(500).json({
       success: false,
       message: "Server error creating return request",
       error: error.message,
-    });
-  }
-});
-
-// Debug endpoint to test database connectivity
-router.get("/debug", async (req, res) => {
-  try {
-    // Test basic connectivity
-    const dbTest = await executeQuery("SELECT 1 as test");
-
-    // Test table structure
-    const tableTest = await executeQuery("SHOW TABLES LIKE 'buku'");
-    const columnTest = await executeQuery("DESCRIBE buku");
-
-    // Test sample data
-    const bookTest = await executeQuery(
-      "SELECT id, judul, stok, tersedia FROM buku LIMIT 3"
-    );
-
-    res.json({
-      success: true,
-      message: "Database connection test",
-      data: {
-        connectivity: dbTest,
-        tableExists: tableTest.length > 0,
-        columns: columnTest,
-        sampleBooks: bookTest,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Database test failed",
-      error: error.message,
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 });
