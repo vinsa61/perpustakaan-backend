@@ -51,7 +51,7 @@ connectToDatabase()
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/books", bookRoutes);
-app.use("/api", adminRoutes); // This will handle /api/requests
+app.use("/api/admin", adminRoutes); // This will handle /api/admin/requests
 app.use("/api/bookshelf", bookshelfRoutes);
 
 // Health check endpoint
@@ -72,8 +72,8 @@ app.get("/", (req, res) => {
         getById: "GET /api/books/:id",
       },
       admin: {
-        getRequests: "GET /api/requests (Admin only)",
-        updateRequest: "PATCH /api/requests/:id (Admin only)",
+        getRequests: "GET /api/admin/requests (Admin only)",
+        updateRequest: "PATCH /api/admin/requests/:id (Admin only)",
       },
       bookshelf: {
         getUserBookshelf: "GET /api/bookshelf/:id",

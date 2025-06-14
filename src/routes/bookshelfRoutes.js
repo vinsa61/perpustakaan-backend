@@ -39,24 +39,18 @@ router.get("/:id", authenticateToken, async (req, res) => {
     peng.tanggal_dikembalikan,
     peng.denda,
     peng.admin_id,
-    a.nama as admin_name,
-    CASE 
-      WHEN peng.id IS NOT NULL THEN 'returned'
+    a.nama as admin_name,    CASE 
+      WHEN p.status = 'pending' THEN 'waiting for approval'
       WHEN p.status = 'dipinjam' THEN 'borrowed'
+      WHEN peng.id IS NOT NULL AND p.status = 'pending' THEN 'returned'
       WHEN p.status = 'selesai' THEN 'completed'
-      ELSE p.status
-    END as current_status,
-    CASE 
-      WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL THEN 'overdue'
-      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'active'
-      WHEN peng.id IS NOT NULL THEN 'returned'
-      ELSE 'completed'
-    END as status_detail,
-    CASE 
-      WHEN p.status = 'dipinjam' AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL
-      THEN DATEDIFF(NOW(), p.tenggat_pengembalian)
-      ELSE 0
-    END as days_overdue
+      ELSE 'waiting for approval'
+    END as current_status,    CASE 
+      WHEN p.status = 'pending' THEN 'waiting for approval'
+      WHEN p.status = 'dipinjam' THEN 'borrowed'
+      WHEN peng.id IS NOT NULL AND p.status = 'pending' THEN 'returned'
+      WHEN p.status = 'selesai' THEN 'completed'      ELSE 'waiting for approval'
+    END as status_detail
   FROM Peminjaman p
   JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
   JOIN Buku b ON pd.buku_id = b.id
@@ -68,19 +62,16 @@ router.get("/:id", authenticateToken, async (req, res) => {
   WHERE p.user_id = ?
 `;
 
-    const params = [id];
-
-    // Add status filter based on database enum values and return status
+    const params = [id]; // Add status filter based on the new 4-state system
     if (status) {
-      if (status === "returned") {
-        query += " AND peng.id IS NOT NULL";
-      } else if (status === "borrowed" || status === "dipinjam") {
-        query += ' AND p.status = "dipinjam" AND peng.id IS NULL';
-      } else if (status === "completed" || status === "selesai") {
-        query += ' AND p.status = "selesai"';
-      } else if (status === "overdue") {
-        query +=
-          ' AND p.status = "dipinjam" AND p.tenggat_pengembalian < NOW() AND peng.id IS NULL';
+      if (status === "waiting for approval") {
+        query += " AND p.status = 'pending'";
+      } else if (status === "borrowed") {
+        query += " AND p.status = 'dipinjam'";
+      } else if (status === "returned") {
+        query += " AND peng.id IS NOT NULL AND p.status = 'pending'";
+      } else if (status === "completed") {
+        query += " AND p.status = 'selesai'";
       }
     }
 
