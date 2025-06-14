@@ -41,15 +41,15 @@ router.get("/:id", authenticateToken, async (req, res) => {
     peng.admin_id,
     a.nama as admin_name,    CASE 
       WHEN p.status = 'pending' THEN 'waiting for approval'
-      WHEN p.status = 'dipinjam' THEN 'borrowed'
-      WHEN peng.id IS NOT NULL AND p.status = 'pending' THEN 'returned'
+      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
+      WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
       WHEN p.status = 'selesai' THEN 'completed'
       ELSE 'waiting for approval'
-    END as current_status,    CASE 
-      WHEN p.status = 'pending' THEN 'waiting for approval'
-      WHEN p.status = 'dipinjam' THEN 'borrowed'
-      WHEN peng.id IS NOT NULL AND p.status = 'pending' THEN 'returned'
-      WHEN p.status = 'selesai' THEN 'completed'      ELSE 'waiting for approval'
+    END as current_status,CASE 
+      WHEN p.status = 'pending' THEN 'waiting for approval'      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
+      WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
+      WHEN p.status = 'selesai' THEN 'completed'
+      ELSE 'waiting for approval'
     END as status_detail
   FROM Peminjaman p
   JOIN Peminjaman_Detail pd ON p.id = pd.peminjaman_id
@@ -67,9 +67,9 @@ router.get("/:id", authenticateToken, async (req, res) => {
       if (status === "waiting for approval") {
         query += " AND p.status = 'pending'";
       } else if (status === "borrowed") {
-        query += " AND p.status = 'dipinjam'";
+        query += " AND p.status = 'dipinjam' AND peng.id IS NULL";
       } else if (status === "returned") {
-        query += " AND peng.id IS NOT NULL AND p.status = 'pending'";
+        query += " AND p.status = 'dipinjam' AND peng.id IS NOT NULL";
       } else if (status === "completed") {
         query += " AND p.status = 'selesai'";
       }
@@ -317,6 +317,50 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Server error retrieving borrowing history",
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/bookshelf/:id/statistics - Get borrowing statistics for a specific user
+router.get("/:id/statistics", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user can access this bookshelf (own bookshelf or admin)
+    if (req.user.type !== "admin" && req.user.id !== parseInt(id)) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Access denied. You can only view your own bookshelf statistics.",
+      });
+    }
+
+    // Get statistics query for specific user
+    const statsQuery = `
+      SELECT 
+        COUNT(*) as total_requests,
+        SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as waiting_approval,
+        SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 1 ELSE 0 END) as borrowed,
+        SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 1 ELSE 0 END) as returned,
+        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed
+      FROM Peminjaman p
+      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
+      WHERE p.user_id = ?
+    `;
+
+    const stats = await executeQuery(statsQuery, [id]);
+
+    res.json({
+      success: true,
+      message: "User bookshelf statistics retrieved successfully",
+      data: stats[0],
+    });
+  } catch (error) {
+    console.error("Get bookshelf statistics error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error retrieving bookshelf statistics",
       error: error.message,
     });
   }

@@ -46,9 +46,10 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
         GROUP_CONCAT(DISTINCT CONCAT(pg.nama_depan, ' ', COALESCE(pg.nama_belakang, '')) ORDER BY pg.nama_depan SEPARATOR ', ') as book_authors,
         GROUP_CONCAT(DISTINCT pen.nama ORDER BY pen.nama SEPARATOR ', ') as publishers,        CASE 
           WHEN p.status = 'pending' THEN 'waiting for approval'
-          WHEN p.status = 'dipinjam' THEN 'borrowed'
-          WHEN peng.id IS NOT NULL AND p.status = 'pending' THEN 'returned'
-          WHEN p.status = 'selesai' THEN 'completed'          ELSE 'waiting for approval'
+          WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
+          WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
+          WHEN p.status = 'selesai' THEN 'completed'
+          ELSE 'waiting for approval'
         END as current_status,
         MAX(peng.tanggal_dikembalikan) as return_date,
         SUM(COALESCE(peng.denda, 0)) as total_fine
@@ -72,9 +73,9 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
       if (type === "waiting for approval") {
         conditions.push("p.status = 'pending'");
       } else if (type === "borrowed") {
-        conditions.push("p.status = 'dipinjam'");
+        conditions.push("p.status = 'dipinjam' AND peng.id IS NULL");
       } else if (type === "returned") {
-        conditions.push("peng.id IS NOT NULL AND p.status = 'pending'");
+        conditions.push("p.status = 'dipinjam' AND peng.id IS NOT NULL");
       } else if (type === "completed") {
         conditions.push("p.status = 'selesai'");
       }
@@ -214,5 +215,37 @@ router.patch(
     }
   }
 );
+
+// GET /api/admin/statistics - Get borrowing statistics (Admin only)
+router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    // Get statistics query
+    const statsQuery = `
+      SELECT 
+        COUNT(*) as total_requests,
+        SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as waiting_approval,
+        SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 1 ELSE 0 END) as borrowed,
+        SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 1 ELSE 0 END) as returned,
+        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed
+      FROM Peminjaman p
+      LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
+    `;
+
+    const stats = await executeQuery(statsQuery);
+
+    res.json({
+      success: true,
+      message: "Statistics retrieved successfully",
+      data: stats[0],
+    });
+  } catch (error) {
+    console.error("Get statistics error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error retrieving statistics",
+      error: error.message,
+    });
+  }
+});
 
 module.exports = router;
