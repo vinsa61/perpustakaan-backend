@@ -11,16 +11,14 @@ async function migratePendingStatus() {
   });
 
   try {
-    console.log("🔄 Running migration to add all required statuses...");
-
-    // Alter the enum to include all 4 statuses
+    console.log("🔄 Running migration to add all required statuses..."); // Alter the enum to include all 5 statuses
     await connection.query(`
       ALTER TABLE peminjaman 
-      MODIFY COLUMN status ENUM('pending', 'dipinjam', 'dikembalikan', 'selesai') NOT NULL
+      MODIFY COLUMN status ENUM('pending', 'dipinjam', 'dikembalikan', 'selesai', 'ditolak') NOT NULL
     `);
 
     console.log(
-      "✅ Successfully added all statuses (pending, dipinjam, dikembalikan, selesai) to peminjaman table"
+      "✅ Successfully added all statuses (pending, dipinjam, dikembalikan, selesai, ditolak) to peminjaman table"
     );
 
     // Update any views that might be affected

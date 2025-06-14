@@ -44,11 +44,14 @@ router.get("/:id", authenticateToken, async (req, res) => {
       WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
       WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
       WHEN p.status = 'selesai' THEN 'completed'
+      WHEN p.status = 'ditolak' THEN 'rejected'
       ELSE 'waiting for approval'
     END as current_status,CASE 
-      WHEN p.status = 'pending' THEN 'waiting for approval'      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
+      WHEN p.status = 'pending' THEN 'waiting for approval'
+      WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 'borrowed'
       WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
       WHEN p.status = 'selesai' THEN 'completed'
+      WHEN p.status = 'ditolak' THEN 'rejected'
       ELSE 'waiting for approval'
     END as status_detail
   FROM Peminjaman p
@@ -61,8 +64,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
   LEFT JOIN Admin a ON peng.admin_id = a.id
   WHERE p.user_id = ?
 `;
-
-    const params = [id]; // Add status filter based on the new 4-state system
+    const params = [id]; // Add status filter based on the new 5-state system
     if (status) {
       if (status === "waiting for approval") {
         query += " AND p.status = 'pending'";
@@ -72,6 +74,8 @@ router.get("/:id", authenticateToken, async (req, res) => {
         query += " AND p.status = 'dipinjam' AND peng.id IS NOT NULL";
       } else if (status === "completed") {
         query += " AND p.status = 'selesai'";
+      } else if (status === "rejected") {
+        query += " AND p.status = 'ditolak'";
       }
     }
 
@@ -161,9 +165,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
             admin_name: book.admin_name,
           }
         : null,
-    }));
-
-    // Calculate summary statistics
+    })); // Calculate summary statistics
     const summary = {
       total_requests: total,
       active_borrowed: transformedBooks.filter(
@@ -174,6 +176,9 @@ router.get("/:id", authenticateToken, async (req, res) => {
       ).length,
       completed: transformedBooks.filter(
         (book) => book.borrow_info.current_status === "completed"
+      ).length,
+      rejected: transformedBooks.filter(
+        (book) => book.borrow_info.current_status === "rejected"
       ).length,
       overdue: transformedBooks.filter(
         (book) => book.borrow_info.status_detail === "overdue"
@@ -334,16 +339,15 @@ router.get("/:id/statistics", authenticateToken, async (req, res) => {
         message:
           "Access denied. You can only view your own bookshelf statistics.",
       });
-    }
-
-    // Get statistics query for specific user
+    } // Get statistics query for specific user
     const statsQuery = `
       SELECT 
         COUNT(*) as total_requests,
         SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as waiting_approval,
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 1 ELSE 0 END) as borrowed,
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 1 ELSE 0 END) as returned,
-        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed
+        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN p.status = 'ditolak' THEN 1 ELSE 0 END) as rejected
       FROM Peminjaman p
       LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
       WHERE p.user_id = ?

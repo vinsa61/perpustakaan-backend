@@ -50,6 +50,7 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
           WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 'returned'
           WHEN p.status = 'dikembalikan' THEN 'waiting for return approval'
           WHEN p.status = 'selesai' THEN 'completed'
+          WHEN p.status = 'ditolak' THEN 'rejected'
           ELSE 'waiting for approval'
         END as current_status,
         MAX(peng.tanggal_dikembalikan) as return_date,
@@ -62,7 +63,7 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
       LEFT JOIN Pengarang pg ON bp.id_pengarang = pg.id
       LEFT JOIN Penerbit pen ON b.id_penerbit = pen.id
       LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
-    `; // Add filtering conditions
+    `;
     const conditions = [];
     const params = [];
 
@@ -81,6 +82,8 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
         conditions.push("p.status = 'dikembalikan'");
       } else if (type === "completed") {
         conditions.push("p.status = 'selesai'");
+      } else if (type === "rejected") {
+        conditions.push("p.status = 'ditolak'");
       }
     }
 
@@ -131,7 +134,7 @@ router.get("/requests", authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// PATCH /api/requests/:id - Update request status (Admin only)
+// PATCH /api/admin/requests/:id - Update request status (Admin only)
 router.patch(
   "/requests/:id",
   authenticateToken,
@@ -139,71 +142,97 @@ router.patch(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { status } = req.body;
+      const { action } = req.body; // action can be "approve" or "reject"
 
-      // Validate status
-      if (!["approved", "rejected"].includes(status)) {
+      // Validate action
+      if (!["approve", "reject"].includes(action)) {
         return res.status(400).json({
           success: false,
-          message: 'Status must be either "approved" or "rejected"',
+          message: 'Action must be either "approve" or "reject"',
         });
       }
 
-      // Check if request exists
+      // Check if request exists and is pending
       const existingRequest = await executeQuery(
-        "SELECT * FROM Peminjaman WHERE id = ?",
+        "SELECT * FROM peminjaman WHERE id = ? AND status = 'pending'",
         [id]
       );
 
       if (existingRequest.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Request not found",
+          message: "Pending request not found",
         });
       }
 
-      if (existingRequest[0].status !== "pending") {
-        return res.status(400).json({
-          success: false,
-          message: "Can only update pending requests",
-        });
-      }
+      const newStatus = action === "approve" ? "dipinjam" : "ditolak";
 
-      // Update request status
-      await executeQuery(
-        "UPDATE Peminjaman SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [status, id]
-      );
+      // Use transaction for atomic operation
+      const { getPool } = require("../config/database");
+      const pool = getPool();
+      const connection = await pool.getConnection();
 
-      // If approved, update book availability
-      if (status === "approved") {
-        const bookDetails = await executeQuery(
-          `
-        SELECT pd.buku_id, b.stok 
-        FROM Peminjaman_Detail pd 
-        JOIN Buku b ON pd.buku_id = b.id 
-        WHERE pd.peminjaman_id = ?
-      `,
-          [id]
+      try {
+        await connection.beginTransaction();
+
+        // Update request status
+        await connection.query(
+          "UPDATE peminjaman SET status = ? WHERE id = ?",
+          [newStatus, id]
         );
 
-        for (const book of bookDetails) {
-          const newStok = book.stok - 1;
-          const tersedia = newStok > 0;
-
-          await executeQuery(
-            "UPDATE Buku SET stok = ?, tersedia = ? WHERE id = ?",
-            [newStok, tersedia, book.buku_id]
+        // If approved, update book availability
+        if (action === "approve") {
+          const bookDetails = await connection.query(
+            `SELECT pd.buku_id, b.stok, b.judul 
+             FROM peminjaman_detail pd 
+             JOIN buku b ON pd.buku_id = b.id 
+             WHERE pd.peminjaman_id = ?`,
+            [id]
           );
+
+          // Check if all books are still available
+          const unavailableBooks = bookDetails[0].filter(
+            (book) => book.stok <= 0
+          );
+          if (unavailableBooks.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: `Cannot approve: Books no longer available: ${unavailableBooks
+                .map((b) => b.judul)
+                .join(", ")}`,
+            });
+          }
+
+          // Update stock for each book
+          for (const book of bookDetails[0]) {
+            await connection.query(
+              `UPDATE buku 
+               SET stok = stok - 1, 
+                   tersedia = CASE WHEN stok - 1 = 0 THEN FALSE ELSE TRUE END 
+               WHERE id = ?`,
+              [book.buku_id]
+            );
+          }
         }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
       }
 
       res.json({
         success: true,
-        message: `Request ${status} successfully`,
+        status: true,
+        message: `Request ${action}d successfully`,
         data: {
           id: parseInt(id),
-          status,
+          action,
+          new_status: newStatus,
           updated_by: req.user.id,
           updated_at: new Date().toISOString(),
         },
@@ -337,35 +366,11 @@ router.post(
           success: false,
           message: "Pending borrow request not found",
         });
-      }
-
-      // Update status to rejected (we'll need to add this to enum or use a different approach)
-      // For now, let's delete the request since 'rejected' is not in the current enum
-      const { getPool } = require("../config/database");
-      const pool = getPool();
-      const connection = await pool.getConnection();
-
-      try {
-        await connection.beginTransaction();
-
-        // Delete peminjaman_detail records first (foreign key constraint)
-        await connection.query(
-          "DELETE FROM peminjaman_detail WHERE peminjaman_id = ?",
-          [peminjamanId]
-        );
-
-        // Delete peminjaman record
-        await connection.query("DELETE FROM peminjaman WHERE id = ?", [
-          peminjamanId,
-        ]);
-
-        await connection.commit();
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
+      } // Update status to 'ditolak' (rejected)
+      await executeQuery(
+        "UPDATE peminjaman SET status = 'ditolak' WHERE id = ?",
+        [peminjamanId]
+      );
 
       res.json({
         success: true,
@@ -390,7 +395,6 @@ router.post(
 // GET /api/admin/statistics - Get borrowing statistics (Admin only)
 router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    // Get statistics query
     const statsQuery = `
       SELECT 
         COUNT(*) as total_requests,
@@ -398,7 +402,8 @@ router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NULL THEN 1 ELSE 0 END) as borrowed,
         SUM(CASE WHEN p.status = 'dipinjam' AND peng.id IS NOT NULL THEN 1 ELSE 0 END) as returned,
         SUM(CASE WHEN p.status = 'dikembalikan' THEN 1 ELSE 0 END) as waiting_return_approval,
-        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed
+        SUM(CASE WHEN p.status = 'selesai' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN p.status = 'ditolak' THEN 1 ELSE 0 END) as rejected
       FROM Peminjaman p
       LEFT JOIN Pengembalian peng ON p.id = peng.peminjaman_id
     `;
@@ -466,11 +471,9 @@ router.post(
         await connection.query(
           "UPDATE peminjaman SET status = 'selesai' WHERE id = ?",
           [peminjamanId]
-        );
-
-        // Update pengembalian status to approved
+        ); // Update pengembalian admin_id to mark as approved
         await connection.query(
-          "UPDATE pengembalian SET status = 'approved', admin_id = ? WHERE peminjaman_id = ?",
+          "UPDATE pengembalian SET admin_id = ? WHERE peminjaman_id = ?",
           [req.user.id, peminjamanId]
         );
 
@@ -549,16 +552,12 @@ router.post(
         await connection.query(
           "UPDATE peminjaman SET status = 'dipinjam' WHERE id = ?",
           [peminjamanId]
-        );
-
-        // Update pengembalian status to rejected with reason
+        ); // Update pengembalian admin_id to mark as rejected
+        // Note: Since we don't have status/rejection_reason columns,
+        // we revert the peminjaman status and keep the pengembalian record
         await connection.query(
-          `UPDATE pengembalian 
-           SET status = 'rejected', 
-               admin_id = ?,
-               rejection_reason = ?
-           WHERE peminjaman_id = ?`,
-          [req.user.id, reason || "Return rejected by admin", peminjamanId]
+          "UPDATE pengembalian SET admin_id = ? WHERE peminjaman_id = ?",
+          [req.user.id, peminjamanId]
         );
 
         await connection.commit();

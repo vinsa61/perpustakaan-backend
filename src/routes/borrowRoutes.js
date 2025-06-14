@@ -76,14 +76,15 @@ router.post("/request", authenticateToken, async (req, res) => {
       // Get next available ID for peminjaman
       const [maxIdResult] = await connection.query(
         "SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM peminjaman"
-      );
-      peminjamanId = maxIdResult[0].next_id; // Create peminjaman record with explicit ID and pending status
+      ); // Create peminjaman record with AUTO_INCREMENT ID and pending status
       // After running migration, this will use 'pending' status for approval workflow
-      await connection.query(
-        `INSERT INTO peminjaman (id, user_id, tanggal_pinjam, tenggat_pengembalian, status, created_at) 
-         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 14 DAY), 'pending', NOW())`,
-        [peminjamanId, userId]
-      ); // Get next available starting ID for peminjaman_detail
+      const [peminjamanResult] = await connection.query(
+        `INSERT INTO peminjaman (user_id, tanggal_pinjam, tenggat_pengembalian, status, created_at) 
+         VALUES (?, NOW(), DATE_ADD(NOW(), INTERVAL 14 DAY), 'pending', NOW())`,
+        [userId]
+      );
+
+      peminjamanId = peminjamanResult.insertId; // Get next available starting ID for peminjaman_detail
       const [maxDetailIdResult] = await connection.query(
         "SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM peminjaman_detail"
       );
@@ -189,12 +190,10 @@ router.post("/return/:id", authenticateToken, async (req, res) => {
     const connection = await pool.getConnection();
 
     try {
-      await connection.beginTransaction();
-
-      // Create return record
+      await connection.beginTransaction(); // Create return record
       await connection.query(
-        `INSERT INTO pengembalian (peminjaman_id, tanggal_dikembalikan, denda, status, created_at) 
-         VALUES (?, NOW(), ?, 'pending', NOW())`,
+        `INSERT INTO pengembalian (peminjaman_id, tanggal_dikembalikan, denda) 
+         VALUES (?, NOW(), ?)`,
         [peminjamanId, fine]
       );
 
