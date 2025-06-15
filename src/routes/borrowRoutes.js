@@ -208,8 +208,10 @@ router.post("/return/:id", authenticateToken, async (req, res) => {
         "SELECT id FROM pengembalian WHERE peminjaman_id = ?",
         [peminjamanId]
       );
-
       if (existingReturn[0].length > 0) {
+        console.log(
+          "Updating existing pengembalian record - this is a return retry after rejection"
+        );
         // Update existing pengembalian record
         await connection.query(
           `UPDATE pengembalian 
@@ -217,8 +219,34 @@ router.post("/return/:id", authenticateToken, async (req, res) => {
            WHERE peminjaman_id = ?`,
           [fine, peminjamanId]
         );
+
+        // Manually increase stock for books since no triggers handle this case
+        const booksInReturn = await connection.query(
+          `SELECT pd.buku_id, b.judul, b.stok
+           FROM peminjaman_detail pd
+           JOIN buku b ON pd.buku_id = b.id
+           WHERE pd.peminjaman_id = ?`,
+          [peminjamanId]
+        );
+
+        for (const book of booksInReturn[0]) {
+          await connection.query(
+            `UPDATE buku 
+             SET stok = stok + 1, 
+                 tersedia = TRUE 
+             WHERE id = ?`,
+            [book.buku_id]
+          );
+          console.log(
+            `Increased stock for book ${book.judul} (ID: ${
+              book.buku_id
+            }) from ${book.stok} to ${book.stok + 1}`
+          );
+        }
       } else {
+        console.log("Creating new pengembalian record - first time return");
         // Create new pengembalian record
+        // Stock will be automatically increased by database triggers
         await connection.query(
           `INSERT INTO pengembalian (peminjaman_id, tanggal_dikembalikan, denda) 
            VALUES (?, NOW(), ?)`,
