@@ -605,4 +605,124 @@ router.post(
   }
 );
 
+// Database Views Endpoints
+
+// Get vw_daftar_peminjaman_anggota
+router.get(
+  "/views/peminjaman-anggota",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await executeQuery(
+        "SELECT * FROM vw_daftar_peminjaman_anggota"
+      );      res.json({
+        status: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error fetching peminjaman anggota view:", error);
+      res.status(500).json({
+        status: false,
+        message: "Error fetching peminjaman anggota data",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get vw_daftar_peminjaman_perpustakaan
+router.get(
+  "/views/peminjaman-perpustakaan",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await executeQuery(
+        "SELECT * FROM vw_daftar_peminjaman_perpustakaan"
+      );      res.json({
+        status: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error fetching peminjaman perpustakaan view:", error);
+      res.status(500).json({
+        status: false,
+        message: "Error fetching peminjaman perpustakaan data",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get vw_daftar_pengembalian
+router.get(
+  "/views/pengembalian",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await executeQuery("SELECT * FROM vw_daftar_pengembalian");      res.json({
+        status: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error fetching pengembalian view:", error);
+      res.status(500).json({
+        status: false,
+        message: "Error fetching pengembalian data",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get vw_laporan_buku_sering_dipinjam
+router.get(
+  "/views/buku-populer",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await executeQuery(
+        "SELECT * FROM vw_laporan_buku_sering_dipinjam"
+      );      res.json({
+        status: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error fetching buku populer view:", error);
+      res.status(500).json({
+        status: false,
+        message: "Error fetching buku populer data",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get vw_statistik_perpustakaan
+router.get(
+  "/views/statistik",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const result = await executeQuery(
+        "SELECT * FROM vw_statistik_perpustakaan"
+      );      res.json({
+        status: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error fetching statistik view:", error);
+      res.status(500).json({
+        status: false,
+        message: "Error fetching statistik data",
+        error: error.message,
+      });
+    }
+  }
+);
+
 module.exports = router;
